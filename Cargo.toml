@@ -1,0 +1,17 @@
+[package]
+name = "toyou-cleanup"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+sea-orm = { version = "0.12.7", features = ["macros", "sqlx-mysql", "runtime-tokio-rustls", "debug-print"] }
+serde = "1.0.193"
+tokio = { version = "1.34.0", features = ["full"] }
+toml = "0.8.8"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+tracing-appender = "0.2.2"
+serde-inline-default = "0.1.1"
+lazy_static = "1.4.0"

@@ -6,7 +6,7 @@ use lazy_static::lazy_static;
 use sea_orm::{ActiveModelTrait, ConnectOptions, Database, DatabaseConnection, DeleteResult, EntityTrait};
 use sea_orm::ActiveValue::Set;
 use tokio::fs;
-use tracing::info;
+use tracing::{debug, info};
 use tracing_appender::non_blocking;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, fmt, Registry};
@@ -27,7 +27,7 @@ lazy_static! {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //time
-    let start = Instant::now();
+    let mut start = Instant::now();
 
     //set up tracing
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&CONFIG.trace_level));
@@ -58,6 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut opt = ConnectOptions::new(&CONFIG.url);
     opt.sqlx_logging(CONFIG.sqlx_debug);
     let db = Database::connect(opt).await?;
+
+    let time_description = format!("{:?}", start.elapsed());
+    debug!("connected in {time_description}");
 
     let all_pictures = Picture::find().all(&db).await?;
     let all_user_pictures = UserPicture::find().all(&db).await?;

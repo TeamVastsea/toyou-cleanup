@@ -1,8 +1,9 @@
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use serde::{Serialize, Deserialize};
+
+use serde::{Deserialize, Serialize};
 use serde_inline_default::serde_inline_default;
-use tracing::{error, info};
+use tracing::error;
 
 #[serde_inline_default]
 #[derive(Serialize, Deserialize, Debug)]

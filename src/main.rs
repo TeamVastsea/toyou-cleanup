@@ -8,6 +8,7 @@ use toml::Value::String;
 use tracing::info;
 
 use tracing_appender::{non_blocking, rolling};
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, fmt, Registry};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -32,7 +33,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&CONFIG.trace_level));
 
     let formatting_layer = fmt::layer().with_writer(std::io::stderr);
-    let file_appender = rolling::daily("log", "log");
+    let file_appender = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_suffix("cleanup.log")
+        .build("log").unwrap();
     let (non_blocking_appender, _guard) = non_blocking(file_appender);
     let file_layer = fmt::layer()
         .with_ansi(false)
@@ -61,8 +65,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     deal_unused(unused, &db).await;
 
     let time_description = format!("{:?}", start.elapsed());
+    info!("unused pictures removed in {time_description}.");
 
-    info!("finished in {time_description}.");
     Ok(())
 }
 

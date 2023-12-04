@@ -27,7 +27,7 @@ lazy_static! {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //time
-    let mut start = Instant::now();
+    let start = Instant::now();
 
     //set up tracing
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&CONFIG.trace_level));

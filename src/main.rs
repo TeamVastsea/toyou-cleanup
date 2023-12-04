@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use glob::glob;
 use lazy_static::lazy_static;
 use sea_orm::{ActiveModelTrait, ConnectOptions, Database, DatabaseConnection, DeleteResult, EntityTrait};
 use sea_orm::ActiveValue::Set;
@@ -67,6 +68,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let time_description = format!("{:?}", start.elapsed());
     info!("unused pictures removed in {time_description}.");
 
+    let all_used_pictures = Picture::find().all(&db).await?;
+    remove_unlinked_pictures(all_used_pictures).await?;
+
+    let time_description = format!("{:?}", start.elapsed());
+    info!("unlinked pictures removed in {time_description}.");
+
+    remove_empty_folder().await?;
+    let time_description = format!("{:?}", start.elapsed());
+    info!("empty folder removed in {time_description}.");
     Ok(())
 }
 
@@ -110,4 +120,39 @@ async fn deal_unused(pictures: Vec<picture::Model>, db: &DatabaseConnection) {
             assert_eq!(res.rows_affected, 1);
         }
     }
+}
+
+async fn remove_unlinked_pictures(pictures: Vec<picture::Model>) -> Result<(), Box<dyn std::error::Error>> {
+    let mut used_list: Vec<&str> = Vec::new();
+
+    for picture in &pictures {
+        used_list.push(&picture.original);
+        used_list.push(&picture.thumbnail);
+        used_list.push(&picture.watermark);
+    }
+
+    for entry in glob("pictures/**/*.*")? {
+        let name = entry?.display().to_string();
+        if !used_list.contains(&name.as_str()) {
+            info!("removing unlinked file: {name}");
+            fs::copy(&name, "trash/".to_string() + &name.split("/").last().unwrap()).await?;
+            fs::remove_file(name).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn remove_empty_folder()-> Result<(), Box<dyn std::error::Error>>  {
+    for entry in glob("pictures/*")? {
+        let entry = entry?;
+        let inner = format!("{}/*.*", &entry.display().to_string());
+        let mut inner_paths = glob(&inner)?;
+        if inner_paths.next().is_none() {
+            info!("removing empty folder: {}", entry.display());
+            fs::remove_dir(entry.display().to_string()).await?;
+        }
+    }
+
+    Ok(())
 }

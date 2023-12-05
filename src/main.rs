@@ -41,9 +41,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let formatting_layer = fmt::layer()
         .with_writer(std::io::stderr)
-        .with_timer(ChronoLocal::new(" %Y-%m-%d %H:%M:%S%.f(%:z)".to_string()));
+        .with_timer(ChronoLocal::new("%Y-%m-%d %H:%M:%S%.f(%:z)".to_string()));
     let file_layer = fmt::layer()
-        .with_timer(ChronoLocal::new(" %Y-%m-%d %H:%M:%S%.f(%:z)".to_string()))
+        .with_timer(ChronoLocal::new("%Y-%m-%d %H:%M:%S%.f(%:z)".to_string()))
         .with_ansi(false)
         .with_writer(non_blocking_appender);
     Registry::default()

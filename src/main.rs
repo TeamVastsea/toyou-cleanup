@@ -10,6 +10,7 @@ use tracing::{debug, info};
 use tracing_appender::non_blocking;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, fmt, Registry};
+use tracing_subscriber::fmt::time::ChronoLocal;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -32,13 +33,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //set up tracing
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&CONFIG.trace_level));
 
-    let formatting_layer = fmt::layer().with_writer(std::io::stderr);
     let file_appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
         .filename_suffix("cleanup.log")
-        .build("log").unwrap();
+        .build("logs")?;
     let (non_blocking_appender, _guard) = non_blocking(file_appender);
+
+    let formatting_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_timer(ChronoLocal::new(" %Y-%m-%d %H:%M:%S%.f(%:z)".to_string()));
     let file_layer = fmt::layer()
+        .with_timer(ChronoLocal::new(" %Y-%m-%d %H:%M:%S%.f(%:z)".to_string()))
         .with_ansi(false)
         .with_writer(non_blocking_appender);
     Registry::default()
@@ -145,7 +150,7 @@ async fn remove_unlinked_pictures(pictures: Vec<picture::Model>) -> Result<(), B
     Ok(())
 }
 
-async fn remove_empty_folder()-> Result<(), Box<dyn std::error::Error>>  {
+async fn remove_empty_folder() -> Result<(), Box<dyn std::error::Error>> {
     for entry in glob("pictures/*")? {
         let entry = entry?;
         let inner = format!("{}/*.*", &entry.display().to_string());

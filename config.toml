@@ -1,3 +1,0 @@
-url = "mysql://toyou:tuyou123@localhost/tuyou"
-trace_level = "debug"
-sqlx_debug = false

@@ -4,9 +4,8 @@ use std::time::Instant;
 use chrono::{DateTime, Days, Local};
 use glob::glob;
 use lazy_static::lazy_static;
-use sea_orm::{ActiveModelTrait, ConnectOptions, Database, DatabaseConnection, DeleteResult, EntityTrait};
-use sea_orm::ActiveValue::Set;
-use tokio::fs;
+use sea_orm::{ActiveModelBehavior, ActiveModelTrait, ConnectOptions, Database, DatabaseConnection, EntityTrait, IntoActiveModel, ModelTrait};
+use tokio::{fs, spawn};
 use tracing::{debug, error, info};
 use tracing_appender::non_blocking;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
@@ -16,7 +15,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::config::ServerConfig;
-use crate::entity::picture;
+use crate::entity::{picture, user_picture};
 use crate::entity::prelude::{Picture, UserPicture};
 
 mod entity;
@@ -53,6 +52,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(file_layer)
         .init();
 
+    /******************** CHECK TRASH DIR *****************************/
+
     let time_description = format!("{:?}", start.elapsed());
     info!("started in {time_description}.");
 
@@ -79,10 +80,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let trash_name = format!("trash/{}", now.format("%Y-%m-%d"));
-    fs::create_dir_all(trash_name).await?;
+    fs::create_dir_all(&trash_name).await?;
 
     let time_description = format!("{:?}", start.elapsed());
     info!("trash dir ready in {time_description}.");
+
+    /******************** CONNECT TO DATABASE *************************/
 
     let mut opt = ConnectOptions::new(&CONFIG.url);
     opt.sqlx_logging(CONFIG.sqlx_debug);
@@ -91,69 +94,87 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let time_description = format!("{:?}", start.elapsed());
     debug!("connected in {time_description}");
 
+    /******************** GET ALL PICTURES ****************************/
     let all_pictures = Picture::find().all(&db).await?;
     let all_user_pictures = UserPicture::find().all(&db).await?;
-    let unused = get_unused_pictures(all_pictures, all_user_pictures).await;
-    deal_unused(unused, &db).await;
-
     let time_description = format!("{:?}", start.elapsed());
-    info!("unused pictures removed in {time_description}.");
+    debug!("pictures query finished in {time_description}");
 
-    let all_used_pictures = Picture::find().all(&db).await?;
-    remove_unlinked_pictures(all_used_pictures).await?;
-
+    /******************** CHECK USED AND UNUSED ***********************/
+    let (unused, used, dangling) = get_used_pictures(all_pictures, all_user_pictures).await;
     let time_description = format!("{:?}", start.elapsed());
-    info!("unlinked pictures removed in {time_description}.");
+    debug!("unused pictures calculated in {time_description}");
 
+    /******************** DELETE DATABASE AND FILE ********************/
+    let handle1 = spawn(delete_database(unused, db.clone(), start.clone(), "unused files removed from database in"));
+    let handle2 = spawn(delete_database(dangling, db.clone(), start.clone(), "dangling files removed from database in"));
+    let handle3 = spawn(delete_file(used, trash_name, start.clone()));
+    handle1.await?;
+    handle2.await?;
+    handle3.await?;
+
+    /******************** REMOVE EMPTY FOLDER *************************/
     remove_empty_folder().await?;
     let time_description = format!("{:?}", start.elapsed());
     info!("empty folder removed in {time_description}.");
+
     Ok(())
 }
 
-async fn get_unused_pictures(pictures: Vec<picture::Model>, user_picture: Vec<entity::user_picture::Model>) -> Vec<picture::Model> {
-    let mut used_map: HashMap<&str, picture::Model> = HashMap::new();
-    for picture in &pictures {
-        used_map.insert(&picture.pid, picture.clone());
-    }
+async fn get_used_pictures(pictures: Vec<picture::Model>, user_pictures: Vec<user_picture::Model>) -> (Vec<picture::Model>, Vec<picture::Model>, Vec<user_picture::Model>) {
+    let mut picture_map: HashMap<String, picture::Model> = HashMap::new();//all pictures
+    let mut used_vec: Vec<picture::Model> = Vec::new();
+    let mut unused_vec: Vec<picture::Model> = Vec::new();
+    let mut dangling_veg: Vec<user_picture::Model> = Vec::new();
 
-    for used in &user_picture {
-        if used_map.contains_key(used.pid.as_str()) {
-            used_map.remove(used.pid.as_str());
-        }
-    }
-
-    let mut unused_vec = Vec::new();
-    for (_, picture) in used_map {
-        unused_vec.push(picture);
-    }
-
-    return unused_vec;
-}
-
-async fn deal_unused(pictures: Vec<picture::Model>, db: &DatabaseConnection) {
     for picture in pictures {
-        if picture.available == 1 {
-            info!("disabling: {}", picture.original);
-            let mut active_picture: picture::ActiveModel = picture.into();
-            active_picture.available = Set(0);
-            active_picture.save(db).await.unwrap();
-        } else {
-            info!("removing file: {}", picture.original);
-            fs::copy(&picture.original, "trash/".to_string() + &picture.original.split("/").last().unwrap()).await.unwrap();
+        picture_map.insert(picture.pid.clone(), picture);
+    }
 
-            fs::remove_file(&picture.original).await.unwrap();
-            fs::remove_file(&picture.thumbnail).await.unwrap();
-            fs::remove_file(&picture.watermark).await.unwrap();
 
-            let active_picture: picture::ActiveModel = picture.into();
-            let res: DeleteResult = active_picture.delete(db).await.unwrap();
-            assert_eq!(res.rows_affected, 1);
+    for user_picture in user_pictures {
+        if user_picture.available == 1 {
+            let picture = picture_map.get(&user_picture.pid);
+            if picture.is_none() {
+                dangling_veg.push(user_picture);
+            } else if picture.unwrap().pid != "added" {
+                let picture = picture.unwrap();
+                used_vec.push(picture.clone());
+                let picture_new = picture::Model {
+                    pid: String::from("added"),
+                    ..picture.clone()
+                };
+                picture_map.insert(user_picture.pid.clone(), picture_new);
+            }
         }
     }
+
+    for (_, picture) in picture_map {
+        if picture.pid != "added" {
+            unused_vec.push(picture);
+        }
+    }
+
+    return (unused_vec, used_vec, dangling_veg);
 }
 
-async fn remove_unlinked_pictures(pictures: Vec<picture::Model>) -> Result<(), Box<dyn std::error::Error>> {
+async fn delete_database<A, T>(pictures: Vec<T>, db: DatabaseConnection, instant: Instant, finish_message: &str)
+    where A: ActiveModelTrait + ActiveModelBehavior + Send,
+          T: ModelTrait + IntoActiveModel<A> {
+    for picture in pictures {
+        let picture = picture.into_active_model();
+        let result = picture.delete(&db).await;
+        match result {
+            Ok(a) => { assert_eq!(a.rows_affected, 1); }
+            Err(e) => { error!("cannot delete database: {e:?}"); }
+        }
+    }
+
+    let time_description = format!("{:?}", instant.elapsed());
+    info!("{finish_message} {time_description}");
+}
+
+async fn delete_file(pictures: Vec<picture::Model>, trash_dir: String, instant: Instant) {
     let mut used_list: Vec<&str> = Vec::new();
 
     for picture in &pictures {
@@ -162,16 +183,17 @@ async fn remove_unlinked_pictures(pictures: Vec<picture::Model>) -> Result<(), B
         used_list.push(&picture.watermark);
     }
 
-    for entry in glob("pictures/**/*.*")? {
-        let name = entry?.display().to_string();
+    for entry in glob("pictures/**/*.*").unwrap() {
+        let name = entry.unwrap().display().to_string();
         if !used_list.contains(&name.as_str()) {
-            info!("removing unlinked file: {name}");
-            fs::copy(&name, "trash/".to_string() + &name.split("/").last().unwrap()).await?;
-            fs::remove_file(name).await?;
+            info!("removing file: {name}");
+            fs::copy(&name, trash_dir.clone() + "/" + &name.split("/").last().unwrap()).await.unwrap();
+            fs::remove_file(name).await.unwrap();
         }
     }
 
-    Ok(())
+    let time_description = format!("{:?}", instant.elapsed());
+    info!("unused files removed in {time_description}");
 }
 
 async fn remove_empty_folder() -> Result<(), Box<dyn std::error::Error>> {

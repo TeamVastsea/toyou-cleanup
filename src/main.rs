@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use chrono::{DateTime, Days, Local};
 use glob::glob;
 use lazy_static::lazy_static;
 use sea_orm::{ActiveModelTrait, ConnectOptions, Database, DatabaseConnection, DeleteResult, EntityTrait};
 use sea_orm::ActiveValue::Set;
 use tokio::fs;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use tracing_appender::non_blocking;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, fmt, Registry};
@@ -51,14 +52,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(formatting_layer)
         .with(file_layer)
         .init();
+
+    let time_description = format!("{:?}", start.elapsed());
+    info!("started in {time_description}.");
+
     //check dir
     if !std::path::Path::new("trash").exists() {
         std::fs::create_dir("trash")?;
     }
 
-    let time_description = format!("{:?}", start.elapsed());
+    let now = Local::now();
+    let a_week_earlier = now.checked_sub_days(Days::new(7)).unwrap();
+    //remove outdated
+    for dir in glob("trash/*")? {
+        let name = dir.unwrap().display().to_string();
+        let name = name.split("/").last().unwrap();
+        let date = DateTime::parse_from_str(&(name.to_string() + " 00:00:00 +0800"), "%Y-%m-%d %H:%M:%S %z");
+        if date.is_err() {
+            error!("{name} is not parseable");
+            continue;
+        }
+        let date = date.unwrap();
+        if date < a_week_earlier {
+            info!("remove outdated trash: {}", name);
+            fs::remove_dir_all(format!("trash/{}", name)).await?;
+        }
+    }
+    let trash_name = format!("trash/{}", now.format("%Y-%m-%d"));
+    fs::create_dir_all(trash_name).await?;
 
-    info!("started in {time_description}.");
+    let time_description = format!("{:?}", start.elapsed());
+    info!("trash dir ready in {time_description}.");
 
     let mut opt = ConnectOptions::new(&CONFIG.url);
     opt.sqlx_logging(CONFIG.sqlx_debug);

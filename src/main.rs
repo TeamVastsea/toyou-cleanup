@@ -15,8 +15,8 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::config::ServerConfig;
-use crate::entity::{picture, user_picture};
-use crate::entity::prelude::{Picture, UserPicture};
+use crate::entity::{permission, picture, user, user_picture};
+use crate::entity::prelude::{Permission, Picture, User, UserPicture};
 
 mod entity;
 mod config;
@@ -24,6 +24,11 @@ mod config;
 lazy_static! {
     static ref CONFIG: ServerConfig = config::get_config();
 }
+const DEFAULT_GROUP: Group = Group {
+    priority: 0,
+    storage: 2048.0,
+    restrictions: 50.0,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -92,22 +97,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::connect(opt).await?;
 
     let time_description = format!("{:?}", start.elapsed());
-    debug!("connected in {time_description}");
+    debug!("connected in {time_description}.");
+
+    let client = reqwest::Client::new();
+    let result = client.post(&CONFIG.mark_url).send().await;
+    if result.is_err()  {
+        error!("send mark request failed.");
+        if !CONFIG.ignore_mark_fail {
+            panic!("Cannot send mark request");
+        }
+    }
 
     /******************** GET ALL PICTURES ****************************/
     let all_pictures = Picture::find().all(&db).await?;
     let all_user_pictures = UserPicture::find().all(&db).await?;
+    let all_permissions = Permission::find().all(&db).await?;
     let time_description = format!("{:?}", start.elapsed());
     debug!("pictures query finished in {time_description}");
 
     /******************** CHECK USED AND UNUSED ***********************/
-    let (unused, used, dangling) = get_used_pictures(all_pictures, all_user_pictures).await;
+    let (unused, used, unesed_ref) = get_used_pictures(all_pictures, all_user_pictures, all_permissions).await;
     let time_description = format!("{:?}", start.elapsed());
     debug!("unused pictures calculated in {time_description}");
 
     /******************** DELETE DATABASE AND FILE ********************/
     let handle1 = spawn(delete_database(unused, db.clone(), start.clone(), "unused files removed from database in"));
-    let handle2 = spawn(delete_database(dangling, db.clone(), start.clone(), "dangling files removed from database in"));
+    let handle2 = spawn(delete_database(unesed_ref, db.clone(), start.clone(), "wrong user pictures removed from database in"));
     let handle3 = spawn(delete_file(used, trash_name, start.clone()));
     handle1.await?;
     handle2.await?;
@@ -118,26 +133,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let time_description = format!("{:?}", start.elapsed());
     info!("empty folder removed in {time_description}.");
 
+
+    let result = client.delete(&CONFIG.mark_url).send().await;
+    if result.is_err()  {
+        error!("send mark request failed.");
+        if !CONFIG.ignore_mark_fail {
+            panic!("Cannot send mark request");
+        }
+    }
+
     Ok(())
 }
 
-async fn get_used_pictures(pictures: Vec<picture::Model>, user_pictures: Vec<user_picture::Model>) -> (Vec<picture::Model>, Vec<picture::Model>, Vec<user_picture::Model>) {
+async fn get_used_pictures(pictures: Vec<picture::Model>, user_pictures: Vec<user_picture::Model>, permissions: Vec<permission::Model>) -> (Vec<picture::Model>, Vec<picture::Model>, Vec<user_picture::Model>) {
     let mut picture_map: HashMap<String, picture::Model> = HashMap::new();//all pictures
+    let mut space_map: HashMap<i64, i64> = HashMap::new();
+    let permission_map: HashMap<i64, (Group, i64)> = get_user_group(permissions).await;
+
     let mut used_vec: Vec<picture::Model> = Vec::new();
     let mut unused_vec: Vec<picture::Model> = Vec::new();
-    let mut dangling_veg: Vec<user_picture::Model> = Vec::new();
+    let mut disable_veg: Vec<user_picture::Model> = Vec::new();
 
     for picture in pictures {
         picture_map.insert(picture.pid.clone(), picture);
     }
 
-
     for user_picture in user_pictures {
         if user_picture.available == 1 {
             let picture = picture_map.get(&user_picture.pid);
+
             if picture.is_none() {
-                dangling_veg.push(user_picture);
+                disable_veg.push(user_picture);
             } else if picture.unwrap().pid != "added" {
+                let used = match space_map.get(&user_picture.uid) {
+                    None => {
+                        0i64
+                    }
+                    Some(a) => {
+                        *a
+                    }
+                };
+                let used = used + picture.unwrap().size;
+                let group = permission_map.get(&user_picture.uid);
+                let (group, expiry) = match group {
+                    None => { &(DEFAULT_GROUP, 0) }
+                    Some(g) => { g }
+                };
+                if used as f32 / 1024.0 / 1024.0 >= group.storage {
+                    debug!("removing file as no enough space: {}", user_picture.file_name);
+                    disable_veg.push(user_picture);
+                    continue;
+                }
+                if picture.unwrap().size as f32 / 1024.0 / 1024.0 > group.restrictions {
+                    debug!("removing file as size too big: {}", user_picture.file_name);
+                    disable_veg.push(user_picture);
+                    continue;
+                }
+                space_map.insert(user_picture.uid, used);
+
                 let picture = picture.unwrap();
                 used_vec.push(picture.clone());
                 let picture_new = picture::Model {
@@ -155,7 +208,34 @@ async fn get_used_pictures(pictures: Vec<picture::Model>, user_pictures: Vec<use
         }
     }
 
-    return (unused_vec, used_vec, dangling_veg);
+    return (unused_vec, used_vec, disable_veg);
+}
+
+async fn get_user_group(permissions: Vec<permission::Model>) -> HashMap<i64, (Group, i64)> {
+    let mut permission_map: HashMap<i64, (Group, i64)> = HashMap::new();
+
+    for permission in permissions {
+        if permission.available == 0 {
+            continue;
+        }
+        if permission.expiry != 0 && permission.expiry < Local::now().checked_sub_days(Days::new(180)).unwrap().timestamp_millis() {
+            continue;
+        }
+
+        let old = permission_map.get(&permission.uid);
+        if old.is_none() {
+            let group = get_group(&permission.permission.to_ascii_lowercase());
+            permission_map.insert(permission.uid, (group, permission.expiry));
+            continue;
+        }
+        let (old, _) = old.unwrap();
+        let group_new = get_group(&permission.permission.to_ascii_lowercase());
+        if group_new.priority > old.priority {
+            permission_map.insert(permission.uid, (group_new, permission.expiry));
+        }
+    }
+
+    return permission_map;
 }
 
 async fn delete_database<A, T>(pictures: Vec<T>, db: DatabaseConnection, instant: Instant, finish_message: &str)
@@ -186,7 +266,7 @@ async fn delete_file(pictures: Vec<picture::Model>, trash_dir: String, instant: 
     for entry in glob("pictures/**/*.*").unwrap() {
         let name = entry.unwrap().display().to_string();
         if !used_list.contains(&name.as_str()) {
-            info!("removing file: {name}");
+            debug!("removing file: {name}");
             fs::copy(&name, trash_dir.clone() + "/" + &name.split("/").last().unwrap()).await.unwrap();
             fs::remove_file(name).await.unwrap();
         }
@@ -208,4 +288,46 @@ async fn remove_empty_folder() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+struct Group {
+    priority: u16,
+    storage: f32,
+    restrictions: f32,
+}
+
+fn get_group(name: &str) -> Group {
+    match name {
+        "started" => {
+            Group {
+                priority: 1,
+                storage: 10240.0,
+                restrictions: 50.0,
+            }
+        }
+
+        "advanced" => {
+            Group {
+                priority: 2,
+                storage: 51200.0,
+                restrictions: 100.0,
+            }
+        }
+
+        "professional" => {
+            Group {
+                priority: 3,
+                storage: 102400.0,
+                restrictions: 999999.0,
+            }
+        }
+
+        &_ => {
+            Group {
+                priority: 0,
+                storage: 2048.0,
+                restrictions: 50.0,
+            }
+        }
+    }
 }

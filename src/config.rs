@@ -14,6 +14,10 @@ pub struct ServerConfig {
     pub trace_level: String,
     #[serde_inline_default(false)]
     pub sqlx_debug: bool,
+    #[serde_inline_default(String::from("127.0.0.1:8102/admin/cleanup"))]
+    pub mark_url: String,
+    #[serde_inline_default(false)]
+    pub ignore_mark_fail: bool,
 }
 
 pub fn get_config() -> ServerConfig {

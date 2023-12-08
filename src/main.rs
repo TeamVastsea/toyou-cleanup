@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     //set up tracing
     fs::create_dir_all("logs").await?;
-    let mut file_name = format!("logs/{}.cleanup.log", now.format("%Y-%m-%d"));
+    let file_name = format!("logs/{}-least.cleanup.log", now.format("%Y-%m-%d"));
     if fs::try_exists(file_name.clone()).await? {
         let mut new_name = file_name.clone();
         let mut file_name_offset = 0;
@@ -115,7 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = reqwest::Client::new();
     let result = client.post(&CONFIG.mark_url).send().await;
-    if result.is_err()  {
+    if result.is_err() {
         error!("send mark request failed: {}.", result.err().unwrap().to_string());
         if !CONFIG.ignore_mark_fail {
             panic!("Cannot send mark request");
@@ -149,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 
     let result = client.delete(&CONFIG.mark_url).send().await;
-    if result.is_err()  {
+    if result.is_err() {
         error!("send mark request failed: {}.", result.err().unwrap().to_string());
         if !CONFIG.ignore_mark_fail {
             panic!("Cannot send mark request");
@@ -189,7 +189,7 @@ async fn get_used_pictures(pictures: Vec<picture::Model>, user_pictures: Vec<use
                 };
                 let used = used + picture.unwrap().size;
                 let group = permission_map.get(&user_picture.uid);
-                let (group, expiry) = match group {
+                let (group, _expiry) = match group {
                     None => { &(DEFAULT_GROUP, 0) }
                     Some(g) => { g }
                 };

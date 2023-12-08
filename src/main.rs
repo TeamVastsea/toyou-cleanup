@@ -42,22 +42,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all("logs").await?;
     let mut file_name = format!("logs/{}.cleanup.log", now.format("%Y-%m-%d"));
     if fs::try_exists(file_name.clone()).await? {
+        let mut new_name = file_name.clone();
         let mut file_name_offset = 0;
-        while fs::try_exists(file_name.clone()).await? {
+        while fs::try_exists(new_name.clone()).await? {
             file_name_offset += 1;
-            let new_name = format!("logs/{}-{file_name_offset}.cleanup.log", now.format("%Y-%m-%d"));
-            file_name = new_name;
+            new_name = format!("logs/{}-{file_name_offset}.cleanup.log", now.format("%Y-%m-%d"));
         }
 
-        fs::rename(format!("logs/{}.cleanup.log", now.format("%Y-%m-%d")), file_name).await?;
+        fs::rename(file_name.clone(), new_name).await?;
     }
 
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&CONFIG.trace_level));
 
     let file_appender = RollingFileAppender::builder()
-        .rotation(Rotation::DAILY)
-        .filename_suffix("cleanup.log")
-        .build("logs")?;
+        .rotation(Rotation::NEVER)
+        .filename_suffix(file_name)
+        .build("")?;
     let (non_blocking_appender, _guard) = non_blocking(file_appender);
 
     let formatting_layer = fmt::layer()

@@ -15,8 +15,8 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::config::ServerConfig;
-use crate::entity::{permission, picture, user, user_picture};
-use crate::entity::prelude::{Permission, Picture, User, UserPicture};
+use crate::entity::{permission, picture, user_picture};
+use crate::entity::prelude::{Permission, Picture, UserPicture};
 
 mod entity;
 mod config;
@@ -24,6 +24,7 @@ mod config;
 lazy_static! {
     static ref CONFIG: ServerConfig = config::get_config();
 }
+
 const DEFAULT_GROUP: Group = Group {
     priority: 0,
     storage: 2048.0,
@@ -34,8 +35,23 @@ const DEFAULT_GROUP: Group = Group {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //time
     let start = Instant::now();
+    let now = Local::now();
+    let a_week_earlier = now.checked_sub_days(Days::new(7)).unwrap();
 
     //set up tracing
+    fs::create_dir_all("logs").await?;
+    let mut file_name = format!("logs/{}.cleanup.log", now.format("%Y-%m-%d"));
+    if fs::try_exists(file_name.clone()).await? {
+        let mut file_name_offset = 0;
+        while fs::try_exists(file_name.clone()).await? {
+            file_name_offset += 1;
+            let new_name = format!("logs/{}-{file_name_offset}.cleanup.log", now.format("%Y-%m-%d"));
+            file_name = new_name;
+        }
+
+        fs::rename(format!("logs/{}.cleanup.log", now.format("%Y-%m-%d")), file_name).await?;
+    }
+
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&CONFIG.trace_level));
 
     let file_appender = RollingFileAppender::builder()
@@ -67,8 +83,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir("trash")?;
     }
 
-    let now = Local::now();
-    let a_week_earlier = now.checked_sub_days(Days::new(7)).unwrap();
     //remove outdated
     for dir in glob("trash/*")? {
         let name = dir.unwrap().display().to_string();
@@ -102,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let result = client.post(&CONFIG.mark_url).send().await;
     if result.is_err()  {
-        error!("send mark request failed.");
+        error!("send mark request failed: {}.", result.err().unwrap().to_string());
         if !CONFIG.ignore_mark_fail {
             panic!("Cannot send mark request");
         }
@@ -136,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let result = client.delete(&CONFIG.mark_url).send().await;
     if result.is_err()  {
-        error!("send mark request failed.");
+        error!("send mark request failed: {}.", result.err().unwrap().to_string());
         if !CONFIG.ignore_mark_fail {
             panic!("Cannot send mark request");
         }
@@ -282,7 +296,7 @@ async fn remove_empty_folder() -> Result<(), Box<dyn std::error::Error>> {
         let inner = format!("{}/*.*", &entry.display().to_string());
         let mut inner_paths = glob(&inner)?;
         if inner_paths.next().is_none() {
-            info!("removing empty folder: {}", entry.display());
+            debug!("removing empty folder: {}", entry.display());
             fs::remove_dir(entry.display().to_string()).await?;
         }
     }

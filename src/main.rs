@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env::args;
 use std::time::Instant;
 
 use chrono::{DateTime, Days, Local};
@@ -37,6 +38,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let now = Local::now();
     let a_week_earlier = now.checked_sub_days(Days::new(7)).unwrap();
+
+    let args: Vec<String> = args().collect();
+
+    let remove_disabled = args.contains(&"-removeDisabled".to_string());
+
 
     //set up tracing
     fs::create_dir_all("logs").await?;
@@ -130,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     debug!("pictures query finished in {time_description}");
 
     /******************** CHECK USED AND UNUSED ***********************/
-    let (unused, used, unesed_ref) = get_used_pictures(all_pictures, all_user_pictures, all_permissions).await;
+    let (unused, used, unesed_ref) = get_used_pictures(all_pictures, all_user_pictures, all_permissions, remove_disabled).await;
     let time_description = format!("{:?}", start.elapsed());
     debug!("unused pictures calculated in {time_description}");
 
@@ -159,14 +165,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn get_used_pictures(pictures: Vec<picture::Model>, user_pictures: Vec<user_picture::Model>, permissions: Vec<permission::Model>) -> (Vec<picture::Model>, Vec<picture::Model>, Vec<user_picture::Model>) {
+async fn get_used_pictures(pictures: Vec<picture::Model>, user_pictures: Vec<user_picture::Model>, permissions: Vec<permission::Model>, remove_disabled: bool) -> (Vec<picture::Model>, Vec<picture::Model>, Vec<user_picture::Model>) {
     let mut picture_map: HashMap<String, picture::Model> = HashMap::new();//all pictures
     let mut space_map: HashMap<i64, i64> = HashMap::new();
     let permission_map: HashMap<i64, (Group, i64)> = get_user_group(permissions).await;
 
     let mut used_vec: Vec<picture::Model> = Vec::new();
     let mut unused_vec: Vec<picture::Model> = Vec::new();
-    let mut disable_veg: Vec<user_picture::Model> = Vec::new();
+    let mut disable_vec: Vec<user_picture::Model> = Vec::new();
 
     for picture in pictures {
         picture_map.insert(picture.pid.clone(), picture);
@@ -177,7 +183,7 @@ async fn get_used_pictures(pictures: Vec<picture::Model>, user_pictures: Vec<use
             let picture = picture_map.get(&user_picture.pid);
 
             if picture.is_none() {
-                disable_veg.push(user_picture);
+                disable_vec.push(user_picture);
             } else if picture.unwrap().pid != "added" {
                 let used = match space_map.get(&user_picture.uid) {
                     None => {
@@ -195,12 +201,12 @@ async fn get_used_pictures(pictures: Vec<picture::Model>, user_pictures: Vec<use
                 };
                 if used as f32 / 1024.0 / 1024.0 >= group.storage {
                     debug!("removing file as no enough space: {}", user_picture.file_name);
-                    disable_veg.push(user_picture);
+                    disable_vec.push(user_picture);
                     continue;
                 }
                 if picture.unwrap().size as f32 / 1024.0 / 1024.0 > group.restrictions {
                     debug!("removing file as size too big: {}", user_picture.file_name);
-                    disable_veg.push(user_picture);
+                    disable_vec.push(user_picture);
                     continue;
                 }
                 space_map.insert(user_picture.uid, used);
@@ -213,6 +219,9 @@ async fn get_used_pictures(pictures: Vec<picture::Model>, user_pictures: Vec<use
                 };
                 picture_map.insert(user_picture.pid.clone(), picture_new);
             }
+        } else if remove_disabled {
+            debug!("removing file as it is disabled: {}", user_picture.file_name);
+            disable_vec.push(user_picture);
         }
     }
 
@@ -222,7 +231,7 @@ async fn get_used_pictures(pictures: Vec<picture::Model>, user_pictures: Vec<use
         }
     }
 
-    return (unused_vec, used_vec, disable_veg);
+    return (unused_vec, used_vec, disable_vec);
 }
 
 async fn get_user_group(permissions: Vec<permission::Model>) -> HashMap<i64, (Group, i64)> {

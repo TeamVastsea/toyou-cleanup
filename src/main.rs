@@ -179,7 +179,7 @@ async fn get_used_pictures(pictures: Vec<picture::Model>, user_pictures: Vec<use
     }
 
     for user_picture in user_pictures {
-        if user_picture.available == 1 {
+        if user_picture.available == 1 || !remove_disabled{
             let picture = picture_map.get(&user_picture.pid);
 
             if picture.is_none() {
@@ -219,7 +219,7 @@ async fn get_used_pictures(pictures: Vec<picture::Model>, user_pictures: Vec<use
                 };
                 picture_map.insert(user_picture.pid.clone(), picture_new);
             }
-        } else if remove_disabled {
+        } else {
             debug!("removing file as it is disabled: {}", user_picture.file_name);
             disable_vec.push(user_picture);
         }

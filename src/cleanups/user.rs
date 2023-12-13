@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use sea_orm::{DatabaseConnection, EntityTrait, ModelTrait};
+use sea_orm::{DatabaseConnection, ModelTrait};
 use tracing::{debug, info};
 
 pub async fn cleanup_user(users: Vec<crate::entity::user::Model>, db: &DatabaseConnection, instant: Instant) -> Vec<i64> {

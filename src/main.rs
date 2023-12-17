@@ -141,6 +141,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         warn!("skipping cleanup shares");
     }
 
+    let time_description = format!("{:?}", start.elapsed());
+    info!("share cleanup finished in {time_description}.");
+
     /******************** MARK END ************************************/
     let result = client.delete(&CONFIG.mark_url).send().await;
     if result.is_err() {

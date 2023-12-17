@@ -1,11 +1,9 @@
 use std::env::args;
 use std::time::Instant;
 
-use chrono::{DateTime, Days, Local};
-use glob::glob;
+use chrono::{Days, Local};
 use lazy_static::lazy_static;
 use sea_orm::{ConnectOptions, Database, EntityTrait};
-use tokio::fs;
 use tracing::{debug, error, info, warn};
 use tracing_appender::non_blocking;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
@@ -15,9 +13,10 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::cleanups::picture::cleanup_pictures;
+use crate::cleanups::share::cleanup_share;
 use crate::cleanups::user::{cleanup_user, collect_user};
-use crate::config::ServerConfig;
-use crate::entity::prelude::{Permission, Picture, User, UserPicture};
+use crate::config::{check_trash_dir, rename_log, ServerConfig};
+use crate::entity::prelude::{Permission, Picture, Share, User, UserPicture};
 
 mod entity;
 mod config;
@@ -44,28 +43,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let remove_user = !args.contains(&"-no_user".to_string());
     let remove_picture = !args.contains(&"-no_picture".to_string());
+    let remove_share = !args.contains(&"no_share".to_string());
 
 
-    //set up tracing
-    fs::create_dir_all("logs").await?;
-    let file_name = format!("logs/{}-least.cleanup.log", now.format("%Y-%m-%d"));
-    if fs::try_exists(file_name.clone()).await? {
-        let mut new_name = file_name.clone();
-        let mut file_name_offset = 0;
-        while fs::try_exists(new_name.clone()).await? {
-            file_name_offset += 1;
-            new_name = format!("logs/{}-{file_name_offset}.cleanup.log", now.format("%Y-%m-%d"));
-        }
-
-        fs::rename(file_name.clone(), new_name).await?;
-    }
-
+    rename_log(now).await;
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&CONFIG.trace_level));
 
     let file_appender = RollingFileAppender::builder()
         .rotation(Rotation::NEVER)
-        .filename_suffix(file_name)
-        .build("")?;
+        .filename_suffix(format!("logs/{}-least.cleanup.log", now.format("%Y-%m-%d")))
+        .build("").unwrap();
     let (non_blocking_appender, _guard) = non_blocking(file_appender);
 
     let formatting_layer = fmt::layer()
@@ -81,33 +68,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(file_layer)
         .init();
 
-    /******************** CHECK TRASH DIR *****************************/
-
     let time_description = format!("{:?}", start.elapsed());
     info!("started in {time_description}.");
-
-    //check dir
-    if !std::path::Path::new("trash").exists() {
-        std::fs::create_dir("trash")?;
-    }
-
-    //remove outdated
-    for dir in glob("trash/*")? {
-        let name = dir.unwrap().display().to_string();
-        let name = name.split("/").last().unwrap();
-        let date = DateTime::parse_from_str(&(name.to_string() + " 00:00:00 +0800"), "%Y-%m-%d %H:%M:%S %z");
-        if date.is_err() {
-            error!("{name} is not parseable");
-            continue;
-        }
-        let date = date.unwrap();
-        if date < a_week_earlier {
-            info!("remove outdated trash: {}", name);
-            fs::remove_dir_all(format!("trash/{}", name)).await?;
-        }
-    }
-    let trash_name = format!("trash/{}", now.format("%Y-%m-%d"));
-    fs::create_dir_all(&trash_name).await?;
+    /******************** CHECK TRASH DIR *****************************/
+    let trash_name = check_trash_dir(a_week_earlier, now).await;
 
     let time_description = format!("{:?}", start.elapsed());
     info!("trash dir ready in {time_description}.");
@@ -154,12 +118,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     debug!("pictures query finished in {time_description}");
 
     /******************** CLEANUP PICTURES ****************************/
-    if remove_picture {
-        cleanup_pictures(available_user, all_pictures,
+    let used_user_pictures = if remove_picture {
+        cleanup_pictures(available_user.clone(), all_pictures,
                          all_user_pictures, all_permissions,
-                         &db, start, trash_name).await;
+                         &db, start, trash_name).await
     } else {
         warn!("skipping cleanup pictures");
+        let mut all_used: Vec<i64> = Vec::new();
+        for user_picture in all_user_pictures {
+            all_used.push(user_picture.id);
+        }
+
+        all_used
+    };
+
+    /******************** CLEANUP SHARES ******************************/
+
+    if remove_share {
+        let all_shares = Share::find().all(&db).await?;
+        cleanup_share(available_user, all_shares, used_user_pictures, &db).await;
+    } else {
+        warn!("skipping cleanup shares");
     }
 
     /******************** MARK END ************************************/

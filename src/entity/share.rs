@@ -8,6 +8,7 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub sid: String,
     pub id: i64,
+    pub uid: i64,
     pub password: Option<String>,
     pub downloads: i64,
     #[sea_orm(column_name = "shareMode")]

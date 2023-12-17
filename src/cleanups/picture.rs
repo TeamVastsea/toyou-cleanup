@@ -12,23 +12,27 @@ use crate::entity::{permission, picture, user_picture};
 
 pub async fn cleanup_pictures(available_users: Vec<i64>, pictures: Vec<picture::Model>,
                               user_pictures: Vec<user_picture::Model>, permissions: Vec<permission::Model>,
-                              db: &DatabaseConnection, start: Instant, trash_dir: String) {
-    /******************** CHECK USED AND UNUSED ***********************/
+                              db: &DatabaseConnection, start: Instant, trash_dir: String) -> Vec<i64> {
+    //check
     let (unused, used, unused_ref) =
-        get_used_pictures(available_users, pictures, user_pictures, permissions).await;
+        get_used_pictures(available_users, pictures, user_pictures.clone(), permissions).await;
 
-    /******************** DELETE DATABASE AND FILE ********************/
+    //delete database and file
     let handle1 = spawn(delete_database(unused, db.clone(), start.clone(), "unused files removed from database in"));
-    let handle2 = spawn(delete_database(unused_ref, db.clone(), start.clone(), "wrong user pictures removed from database in"));
+    let handle2 = spawn(delete_database(unused_ref.clone(), db.clone(), start.clone(), "wrong user pictures removed from database in"));
     let handle3 = spawn(delete_file(used, trash_dir, start.clone()));
+    //get used
+    let handle4 = spawn(get_used_user_picture(unused_ref, user_pictures));
     handle1.await.unwrap();
     handle2.await.unwrap();
     handle3.await.unwrap();
 
-    /******************** REMOVE EMPTY FOLDER *************************/
+    //remove empty folder
     remove_empty_folder().await.unwrap();
     let time_description = format!("{:?}", start.elapsed());
     info!("picture cleanup finished in {time_description}.");
+
+    handle4.await.unwrap()
 }
 
 async fn get_used_pictures(available_users: Vec<i64>, pictures: Vec<picture::Model>,
@@ -182,4 +186,16 @@ async fn remove_empty_folder() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+async fn get_used_user_picture(unused_user_pictures: Vec<user_picture::Model>, user_pictures: Vec<user_picture::Model>) -> Vec<i64> {
+    let mut used_vec: Vec<i64> = Vec::new();
+
+    for user_picture in user_pictures {
+        if !unused_user_pictures.contains(&user_picture) {
+            used_vec.push(user_picture.id);
+        }
+    }
+
+    used_vec
 }

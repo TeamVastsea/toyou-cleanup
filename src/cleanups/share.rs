@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Months};
 use sea_orm::{DatabaseConnection, ModelTrait};
 
 pub async fn cleanup_share(available_users: Vec<i64>, shares: Vec<crate::entity::share::Model>, user_picture_list: Vec<i64>, db: &DatabaseConnection, now: DateTime<Local>) {
@@ -8,7 +8,7 @@ pub async fn cleanup_share(available_users: Vec<i64>, shares: Vec<crate::entity:
             continue;
         }
 
-        if now.timestamp_millis() > share.expiry {
+        if now.checked_add_months(Months::new(2)).unwrap().timestamp_millis() > share.expiry {
             share.delete(db).await.unwrap();
             continue;
         }

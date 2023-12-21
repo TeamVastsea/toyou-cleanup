@@ -136,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if remove_share {
         let all_shares = Share::find().all(&db).await?;
-        cleanup_share(available_user, all_shares, used_user_pictures, &db).await;
+        cleanup_share(available_user, all_shares, used_user_pictures, &db, now.clone()).await;
     } else {
         warn!("skipping cleanup shares");
     }

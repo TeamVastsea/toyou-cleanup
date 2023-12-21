@@ -15,7 +15,7 @@ pub async fn cleanup_pictures(available_users: Vec<i64>, pictures: Vec<picture::
                               db: &DatabaseConnection, start: Instant, trash_dir: String) -> Vec<i64> {
     //check
     let (unused, used, unused_ref) =
-        get_used_pictures(available_users, pictures, user_pictures.clone(), permissions).await;
+        get_used_pictures(available_users, pictures, user_pictures.clone(), permissions, db).await;
 
     //delete database and file
     let handle1 = spawn(delete_database(unused, db.clone(), start.clone(), "unused files removed from database in"));
@@ -37,10 +37,11 @@ pub async fn cleanup_pictures(available_users: Vec<i64>, pictures: Vec<picture::
 
 async fn get_used_pictures(available_users: Vec<i64>, pictures: Vec<picture::Model>,
                            user_pictures: Vec<user_picture::Model>, permissions: Vec<permission::Model>,
+                           db: &DatabaseConnection,
 ) -> (Vec<picture::Model>, Vec<picture::Model>, Vec<user_picture::Model>) {
     let mut picture_map: HashMap<String, picture::Model> = HashMap::new();//all pictures
     let mut space_map: HashMap<i64, i64> = HashMap::new();
-    let permission_map: HashMap<i64, (crate::Group, i64)> = get_user_group(permissions).await;
+    let permission_map: HashMap<i64, (crate::Group, i64)> = get_user_group(permissions, db).await;
 
     let mut used_vec: Vec<picture::Model> = Vec::new();
     let mut unused_vec: Vec<picture::Model> = Vec::new();
@@ -109,14 +110,16 @@ async fn get_used_pictures(available_users: Vec<i64>, pictures: Vec<picture::Mod
     return (unused_vec, used_vec, disable_vec);
 }
 
-async fn get_user_group(permissions: Vec<permission::Model>) -> HashMap<i64, (crate::Group, i64)> {
+async fn get_user_group(permissions: Vec<permission::Model>, db: &DatabaseConnection) -> HashMap<i64, (crate::Group, i64)> {
     let mut permission_map: HashMap<i64, (crate::Group, i64)> = HashMap::new();
 
     for permission in permissions {
         if permission.available == 0 {
+            permission.delete(db).await.unwrap();
             continue;
         }
         if permission.expiry != 0 && permission.expiry < Local::now().checked_sub_days(Days::new(180)).unwrap().timestamp_millis() {
+            permission.delete(db).await.unwrap();
             continue;
         }
 

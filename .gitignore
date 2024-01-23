@@ -3,4 +3,5 @@
 /logs
 /trash
 /.idea
+/config
 config.toml

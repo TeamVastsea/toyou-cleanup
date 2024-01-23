@@ -25,6 +25,8 @@ pub struct ServerConfig {
 
 pub fn get_config() -> ServerConfig {
     let mut raw_config = String::new();
+
+    std::fs::create_dir_all("config").unwrap();
     let mut file = OpenOptions::new().read(true).write(true).create(true).open("config/config.toml").expect("Cannot open 'config.toml'");
     file.read_to_string(&mut raw_config).unwrap();
 
